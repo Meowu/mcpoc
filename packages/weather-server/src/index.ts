@@ -18,12 +18,158 @@ import {
   ReadResourceRequestSchema,
   ListPromptsRequestSchema,
   GetPromptRequestSchema,
+  ListResourcesResultSchema,
+  McpError,
+  ErrorCode,
 } from "@modelcontextprotocol/sdk/types.js";
+import axios from "axios";
+import dotenv from "dotenv";
+import {
+  WeatherData,
+  isValidForecastArgs,
+  ForecastDay,
+  OpenWeatherResponse,
+} from "./types.js";
+
+dotenv.config();
+
+const API_KEY = process.env.OPENWEATHER_API_KEY;
+
+if (!API_KEY) {
+  throw new Error("OPENWEATHER_API_KEY environment variable is required");
+}
+
+const API_CONFIG = {
+  BASE_URL: "http://api.openweathermap.org/data/2.5",
+  DEFAULT_CITY: "San Francisco",
+  ENDPOINTS: {
+    CURRENT: "weather",
+    FORECAST: "forecast",
+  },
+} as const;
+
+class WeatherServer {
+  private server: Server;
+  private axiosInstance;
+
+  constructor() {
+    this.server = new Server(
+      {
+        name: "custom-weather-server",
+        version: "0.1.0",
+      },
+      {
+        capabilities: {
+          resources: {},
+          tools: {},
+        },
+      },
+    );
+
+    this.axiosInstance = axios.create({
+      baseURL: API_CONFIG.BASE_URL,
+      params: {
+        appid: API_KEY,
+        units: "metric",
+      },
+    });
+
+    this.setupHandlers();
+    this.setupErrorHandling();
+  }
+
+  private setupErrorHandling(): void {
+    this.server.onerror = (error) => {
+      console.error("[MCP Error]", error);
+    };
+
+    process.on("SIGINT", async () => {
+      await this.server.close();
+      process.exit();
+    });
+  }
+
+  private setupHandlers() {
+    this.setupResourceHandlers();
+    this.setupToolHandlers();
+  }
+
+  private setupResourceHandlers(): void {
+    this.server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+      resources: [
+        {
+          uri: `weather://${API_CONFIG.DEFAULT_CITY}/current`,
+          name: `Current weather in ${API_CONFIG.DEFAULT_CITY}`,
+          mimeType: "application/json",
+          description:
+            "Real-time weather data including temperature, conditions, humidity, and wind speed",
+        },
+      ],
+    }));
+
+    this.server.setRequestHandler(
+      ReadResourceRequestSchema,
+      async (request) => {
+        const city = API_CONFIG.DEFAULT_CITY;
+        if (request.params.uri !== `weather://${city}/current`) {
+          throw new McpError(
+            ErrorCode.InvalidRequest,
+            `Unknown resource: ${request.params.uri}`,
+          );
+        }
+
+        try {
+          const response = await this.axiosInstance.get<OpenWeatherResponse>(
+            API_CONFIG.ENDPOINTS.CURRENT,
+            { params: { q: city } },
+          );
+          const weatherData: WeatherData = {
+            temperature: response.data.main.temp,
+            conditions: response.data.weather[0].description,
+            humidity: response.data.main.humidity,
+            wind_speed: response.data.wind.speed,
+            timestamp: new Date().toISOString(),
+          };
+          return {
+            contents: [{
+              uri: request.params.uri,
+              mimeType: "application/json",
+              text: JSON.stringify(weatherData, null, 2)
+            }]
+          }
+        } catch (error) {
+          if (axios.isAxiosError(error)) {
+            throw new McpError(
+              ErrorCode.InternalError,
+              `Weather API error: ${error.response?.data.message ?? error.message}`
+            );
+          }
+          throw error;
+        }
+      },
+    );
+  }
+
+  private setupToolHandlers() {}
+
+  async run() {
+    const transport = new StdioServerTransport();
+    await this.server.connect(transport);
+
+    // Although this is just an informative message, we must log to stderr,
+    // to avoid interfering with MCP communication that happens on stdout
+    // ???
+    console.error("Weather MCP server running on stdio");
+  }
+}
+
+const server = new WeatherServer();
+server.run().catch(console.error);
 
 /**
  * Type alias for a note object.
  */
-type Note = { title: string, content: string };
+type Note = { title: string; content: string };
 
 /**
  * Simple in-memory storage for notes.
@@ -31,7 +177,7 @@ type Note = { title: string, content: string };
  */
 const notes: { [id: string]: Note } = {
   "1": { title: "First Note", content: "This is note 1" },
-  "2": { title: "Second Note", content: "This is note 2" }
+  "2": { title: "Second Note", content: "This is note 2" },
 };
 
 /**
@@ -49,7 +195,7 @@ const server = new Server(
       tools: {},
       prompts: {},
     },
-  }
+  },
 );
 
 /**
@@ -65,8 +211,8 @@ server.setRequestHandler(ListResourcesRequestSchema, async () => {
       uri: `note:///${id}`,
       mimeType: "text/plain",
       name: note.title,
-      description: `A text note: ${note.title}`
-    }))
+      description: `A text note: ${note.title}`,
+    })),
   };
 });
 
@@ -76,7 +222,7 @@ server.setRequestHandler(ListResourcesRequestSchema, async () => {
  */
 server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
   const url = new URL(request.params.uri);
-  const id = url.pathname.replace(/^\//, '');
+  const id = url.pathname.replace(/^\//, "");
   const note = notes[id];
 
   if (!note) {
@@ -84,11 +230,13 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
   }
 
   return {
-    contents: [{
-      uri: request.params.uri,
-      mimeType: "text/plain",
-      text: note.content
-    }]
+    contents: [
+      {
+        uri: request.params.uri,
+        mimeType: "text/plain",
+        text: note.content,
+      },
+    ],
   };
 });
 
@@ -107,17 +255,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           properties: {
             title: {
               type: "string",
-              description: "Title of the note"
+              description: "Title of the note",
             },
             content: {
               type: "string",
-              description: "Text content of the note"
-            }
+              description: "Text content of the note",
+            },
           },
-          required: ["title", "content"]
-        }
-      }
-    ]
+          required: ["title", "content"],
+        },
+      },
+    ],
   };
 });
 
@@ -138,10 +286,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       notes[id] = { title, content };
 
       return {
-        content: [{
-          type: "text",
-          text: `Created note ${id}: ${title}`
-        }]
+        content: [
+          {
+            type: "text",
+            text: `Created note ${id}: ${title}`,
+          },
+        ],
       };
     }
 
@@ -160,8 +310,8 @@ server.setRequestHandler(ListPromptsRequestSchema, async () => {
       {
         name: "summarize_notes",
         description: "Summarize all notes",
-      }
-    ]
+      },
+    ],
   };
 });
 
@@ -179,8 +329,8 @@ server.setRequestHandler(GetPromptRequestSchema, async (request) => {
     resource: {
       uri: `note:///${id}`,
       mimeType: "text/plain",
-      text: note.content
-    }
+      text: note.content,
+    },
   }));
 
   return {
@@ -189,21 +339,21 @@ server.setRequestHandler(GetPromptRequestSchema, async (request) => {
         role: "user",
         content: {
           type: "text",
-          text: "Please summarize the following notes:"
-        }
+          text: "Please summarize the following notes:",
+        },
       },
-      ...embeddedNotes.map(note => ({
+      ...embeddedNotes.map((note) => ({
         role: "user" as const,
-        content: note
+        content: note,
       })),
       {
         role: "user",
         content: {
           type: "text",
-          text: "Provide a concise summary of all the notes above."
-        }
-      }
-    ]
+          text: "Provide a concise summary of all the notes above.",
+        },
+      },
+    ],
   };
 });
 
