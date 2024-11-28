@@ -20,6 +20,12 @@ export interface WeatherData {
   timestamp: string;
 }
 
+export interface ForecastDay {
+  date: string;
+  temperature: number;
+  conditions: string;
+}
+
 export interface GetForecastArgs {
   city: string;
   days?: number;

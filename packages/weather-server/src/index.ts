@@ -63,7 +63,7 @@ class WeatherServer {
           resources: {},
           tools: {},
         },
-      },
+      }
     );
 
     this.axiosInstance = axios.create({
@@ -114,14 +114,14 @@ class WeatherServer {
         if (request.params.uri !== `weather://${city}/current`) {
           throw new McpError(
             ErrorCode.InvalidRequest,
-            `Unknown resource: ${request.params.uri}`,
+            `Unknown resource: ${request.params.uri}`
           );
         }
 
         try {
           const response = await this.axiosInstance.get<OpenWeatherResponse>(
             API_CONFIG.ENDPOINTS.CURRENT,
-            { params: { q: city } },
+            { params: { q: city } }
           );
           const weatherData: WeatherData = {
             temperature: response.data.main.temp,
@@ -131,26 +131,117 @@ class WeatherServer {
             timestamp: new Date().toISOString(),
           };
           return {
-            contents: [{
-              uri: request.params.uri,
-              mimeType: "application/json",
-              text: JSON.stringify(weatherData, null, 2)
-            }]
-          }
+            contents: [
+              {
+                uri: request.params.uri,
+                mimeType: "application/json",
+                text: JSON.stringify(weatherData, null, 2),
+              },
+            ],
+          };
         } catch (error) {
           if (axios.isAxiosError(error)) {
             throw new McpError(
               ErrorCode.InternalError,
-              `Weather API error: ${error.response?.data.message ?? error.message}`
+              `Weather API error: ${
+                error.response?.data.message ?? error.message
+              }`
             );
           }
           throw error;
         }
-      },
+      }
     );
   }
 
-  private setupToolHandlers() {}
+  private setupToolHandlers() {
+    this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
+      tools: [
+        {
+          name: "get_forecast",
+          description: "Get weather forecast for a city",
+          inputSchema: {
+            type: "object",
+            properties: {
+              city: {
+                type: "string",
+                description: "City name",
+              },
+              days: {
+                type: "number",
+                description: "Number of days (1-5)",
+                minimum: 1,
+                maximum: 5,
+              },
+            },
+            required: ["city"],
+          },
+        },
+      ],
+    }));
+
+    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+      if (request.params.name !== "get_forecast") {
+        throw new McpError(
+          ErrorCode.MethodNotFound,
+          `Unknown tool: ${request.params.name}`
+        );
+      }
+
+      if (!isValidForecastArgs(request.params.arguments)) {
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          "Invalid forecast arguments"
+        );
+      }
+
+      const city = request.params.arguments.city;
+      const days = Math.min(request.params.arguments.days || 3, 5);
+
+      try {
+        const response = await this.axiosInstance.get<{
+          list: OpenWeatherResponse[];
+        }>(API_CONFIG.ENDPOINTS.FORECAST, {
+          params: {
+            q: city,
+            cnt: days * 8,
+          },
+        });
+
+        const forecasts: ForecastDay[] = [];
+        for (let i = 0; i < response.data.list.length; i += 8) {
+          const dayData = response.data.list[i];
+          forecasts.push({
+            date:
+              dayData.dt_txt?.split(" ")[0] ??
+              new Date().toISOString().split("T")[0],
+            temperature: dayData.main.temp,
+            conditions: dayData.weather[0].description,
+          });
+        }
+
+        return {
+          content: {
+            mimeType: "application/json",
+            text: JSON.stringify(forecasts, null, 2),
+          },
+        };
+      } catch (error) {
+        if (axios.isAxiosError(error)) {
+          return {
+            content: {
+              mimeType: "text/plain",
+              text: `Weather API error: ${
+                error.response?.data.message ?? error.message
+              }`,
+            },
+            isError: true,
+          };
+        }
+        throw error;
+      }
+    });
+  }
 
   async run() {
     const transport = new StdioServerTransport();
@@ -184,7 +275,7 @@ const notes: { [id: string]: Note } = {
  * Create an MCP server with capabilities for resources (to list/read notes),
  * tools (to create new notes), and prompts (to summarize notes).
  */
-const server = new Server(
+const server1 = new Server(
   {
     name: "weather-server",
     version: "0.1.0",
@@ -195,7 +286,7 @@ const server = new Server(
       tools: {},
       prompts: {},
     },
-  },
+  }
 );
 
 /**
@@ -205,7 +296,7 @@ const server = new Server(
  * - Plain text MIME type
  * - Human readable name and description (now including the note title)
  */
-server.setRequestHandler(ListResourcesRequestSchema, async () => {
+server1.setRequestHandler(ListResourcesRequestSchema, async () => {
   return {
     resources: Object.entries(notes).map(([id, note]) => ({
       uri: `note:///${id}`,
@@ -220,7 +311,7 @@ server.setRequestHandler(ListResourcesRequestSchema, async () => {
  * Handler for reading the contents of a specific note.
  * Takes a note:// URI and returns the note content as plain text.
  */
-server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+server1.setRequestHandler(ReadResourceRequestSchema, async (request) => {
   const url = new URL(request.params.uri);
   const id = url.pathname.replace(/^\//, "");
   const note = notes[id];
@@ -244,7 +335,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
  * Handler that lists available tools.
  * Exposes a single "create_note" tool that lets clients create new notes.
  */
-server.setRequestHandler(ListToolsRequestSchema, async () => {
+server1.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
     tools: [
       {
@@ -273,7 +364,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
  * Handler for the create_note tool.
  * Creates a new note with the provided title and content, and returns success message.
  */
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
+server1.setRequestHandler(CallToolRequestSchema, async (request) => {
   switch (request.params.name) {
     case "create_note": {
       const title = String(request.params.arguments?.title);
@@ -304,7 +395,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
  * Handler that lists available prompts.
  * Exposes a single "summarize_notes" prompt that summarizes all notes.
  */
-server.setRequestHandler(ListPromptsRequestSchema, async () => {
+server1.setRequestHandler(ListPromptsRequestSchema, async () => {
   return {
     prompts: [
       {
@@ -319,7 +410,7 @@ server.setRequestHandler(ListPromptsRequestSchema, async () => {
  * Handler for the summarize_notes prompt.
  * Returns a prompt that requests summarization of all notes, with the notes' contents embedded as resources.
  */
-server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+server1.setRequestHandler(GetPromptRequestSchema, async (request) => {
   if (request.params.name !== "summarize_notes") {
     throw new Error("Unknown prompt");
   }
@@ -363,10 +454,10 @@ server.setRequestHandler(GetPromptRequestSchema, async (request) => {
  */
 async function main() {
   const transport = new StdioServerTransport();
-  await server.connect(transport);
+  await server1.connect(transport);
 }
 
-main().catch((error) => {
-  console.error("Server error:", error);
-  process.exit(1);
-});
+// main().catch((error) => {
+//   console.error("Server error:", error);
+//   process.exit(1);
+// });
