@@ -298,6 +298,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     const { name, arguments: args } = request.params;
+    // console.log('list_directory', args)
 
     switch (name) {
       case "read_file": {
@@ -359,6 +360,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case "list_directory": {
+        // console.log('parsed')
         const parsed = ListDirectoryArgsSchema.safeParse(args);
         if (!parsed.success) {
           throw new Error(`Invalid arguments for list_directory: ${parsed.error}`);
