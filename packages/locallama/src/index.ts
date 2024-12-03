@@ -15,6 +15,7 @@ const image = data.toString('base64')
 
 const response = await ollama.chat({
   model: 'llama3.2-vision',
+  // model: 'llava',
   messages: [{
     role: 'user',
     content: 'Understand the image, and return a short image name with ext .png',
